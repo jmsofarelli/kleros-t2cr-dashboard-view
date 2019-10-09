@@ -8,138 +8,308 @@
 pragma solidity 0.5.10;
 pragma experimental ABIEncoderV2;
 
-interface Arbitrator { }
-
-interface ArbitrableTokenList {
-
-    enum TokenStatus { Absent, Registered, RegistrationRequested, ClearingRequested }
-    enum Party { None, Requester, Challenger }
-
-    function tokensList(uint index)
-        external
-        view
-        returns ( bytes32 tokenID );
-
-    function getTokenInfo(bytes32 _tokenID)
-        external
-        view
-        returns (
-            string memory name,
-            string memory ticker,
-            address addr,
-            string memory symbolMultihash,
-            TokenStatus status,
-            uint numberOfRequests
-        );
-
-    function queryTokens(bytes32 _cursor, uint _count, bool[8] calldata _filter, bool _oldestFirst, address _tokenAddr)
-        external
-        view
-        returns (
-            bytes32[] memory values,
-            bool hasMore
-        );
-
-    function getRequestInfo(bytes32 _tokenID, uint _request)
-        external
-        view
-        returns (
-            bool disputed,
-            uint disputeID,
-            uint submissionTime,
-            bool resolved,
-            address[3] memory parties,
-            uint numberOfRounds,
-            Party ruling,
-            Arbitrator arbitrator,
-            bytes memory arbitratorExtraData
-        );
-
-    function getRoundInfo(bytes32 _tokenID, uint _request, uint _round)
-        external
-        view
-        returns (
-            bool appealed,
-            uint[3] memory paidFees,
-            bool[3] memory hasPaid,
-            uint feeRewards
-        );
-}
+import "./ArbitrableTokenList.sol";
+import "./ArbitrableAddressList.sol";
+import "./Arbitrator.sol";
+import "./KlerosLiquid.sol";
 
 /** @title DashboardView
- *  Utility view contract to fetch requester deposit fee data
+ *  Smart Contract used to fetch data for the Token Curated List Dashboard
  */
 contract DashboardView {
 
-    /**
-     * Type used to wrap the returned data
+    /*
+     *  Reduced version of a token, containing only the information needed by the dashboard ui
      */
-    struct TokenDepositData {
-        bytes32 ID; // ID of the token
-        uint submissionTime; // Time of token submission
-        uint requesterDepositFee; // Deposit fee paid by requester
+    struct Token {
+        string name;
+        string ticker;
+        string symbolMultihash;
     }
 
-    /** @dev Fetch deposit data of tokens present on a Token² Curated Registry (t2cr contract)
-     *  @param _t2crAddress The address of the t2cr contract
-     *  @param _firstIndex The index of the first token
-     *  @param _lastIndex The index of the last token
-     *  @return The deposit data of the token (TokenDepositData)
+    /*
+     * Statuses used in the Dashboard
      */
-    function getTokensDepositData(address _t2crAddress, uint _firstIndex, uint _lastIndex)
+    enum Status {
+        Accepted,
+        Rejected,
+        Pending,
+        Challenged,
+        Crowdfunding,
+        Appealed
+    }
+
+    /**
+      *  @dev Return the number of addresses by status
+      *  @param _aalAddress The address of the contract ArbitrableAddressList
+      *  @param _klAddress The address of the contract KlerosLiquid
+      *  @param _cursor The index from where to start iteration
+      *  @param _count The number of items to iterate over
+      *  @return The number of addresses by status
+      */
+    function addressCountByStatus(address _aalAddress, address _klAddress, uint _cursor, uint _count)
         external
         view
-        returns (TokenDepositData[] memory tokensDepositData)
+        returns (
+            uint accepted,
+            uint rejected,
+            uint pending,
+            uint challenged,
+            uint crowdfunding,
+            uint appealed
+        )
     {
-        ArbitrableTokenList t2cr = ArbitrableTokenList(_t2crAddress);
+        ArbitrableAddressList aal = ArbitrableAddressList(_aalAddress);
+        KlerosLiquid kl = KlerosLiquid(_klAddress);
 
-        // Index for tokensDepositData array
-        uint tddi = 0;
-
-        for (uint i = _firstIndex; i <= _lastIndex; i++) {
-            bytes32 tokenID = t2cr.tokensList(i);
-
-            // Get submission time
-            uint submissionTime = getSubmissionTime(t2cr, tokenID);
-
-            // Get deposit fee paid by requester
-            uint requesterDepositFee = getRequesterDepositFee(t2cr, tokenID);
-
-            // Add TokenDepositData to returned array
-            tokensDepositData[tddi] = TokenDepositData(tokenID, submissionTime, requesterDepositFee);
-            tddi++;
+        for (uint i = _cursor; i < (_cursor + _count); i++) {
+            address addr = aal.addressList(i);
+            Status status = getAddressStatus(aal, kl, addr);
+            bool wasChallenged = wasAddressChallenged(aal, addr);
+            if (status == Status.Accepted) accepted++;
+            if (status == Status.Rejected) rejected++;
+            if (status == Status.Pending) pending++;
+            if (status == Status.Crowdfunding) crowdfunding++;
+            if (status == Status.Appealed) appealed++;
+            if (wasChallenged) challenged++;
         }
     }
 
-    /** @dev Get the submission time of the token
-     * @param _t2cr An instance of the contract ArbitrableTokenList
-     * @param _tokenID The ID of the token
-     * @return The submission time of the token
-     */
-    function getSubmissionTime(ArbitrableTokenList _t2cr, bytes32 _tokenID)
-        internal
+     /**
+      *  @dev Return the number of tokens by status.
+      *  @param _t2crAddress The address of the contract ArbitrableTokenList
+      *  @param _klAddress The address of the contract KlerosLiquid
+      *  @param _cursor The index from where to start iteration
+      *  @param _count The number of items to iterate over
+      *  @return The number of tokens by status.
+      */
+    function tokenCountByStatus(address _t2crAddress, address _klAddress, uint _cursor, uint _count)
+        external
         view
-        returns ( uint submissionTime )
+        returns (
+            uint accepted,
+            uint rejected,
+            uint pending,
+            uint challenged,
+            uint crowdfunding,
+            uint appealed
+        )
     {
-        // The submission time is present in the first request (0) for the token
-        ( , , submissionTime, , , , , , ) = _t2cr.getRequestInfo(_tokenID, 0);
+        ArbitrableTokenList t2cr = ArbitrableTokenList(_t2crAddress);
+        KlerosLiquid kl = KlerosLiquid(_klAddress);
+
+        for (uint i = _cursor; i < (_cursor + _count); i++) {
+            bytes32 tokenID = t2cr.tokensList(i);
+            Status status = getTokenStatus(t2cr, kl, tokenID);
+            bool wasChallenged = wasTokenChallenged(t2cr, tokenID);
+            if (status == Status.Accepted) accepted++;
+            if (status == Status.Rejected) rejected++;
+            if (status == Status.Pending) pending++;
+            if (status == Status.Crowdfunding) crowdfunding++;
+            if (status == Status.Appealed) appealed++;
+            if (wasChallenged) challenged++;
+        }
     }
 
-    /** @dev Get the deposit fee paid by the requester
-     * @param _t2cr An instance of the contract ArbitrableTokenList
-     * @param _tokenID The ID of the token
-     * @return The deposit fee paid by the requester
-     */
-    function getRequesterDepositFee(ArbitrableTokenList _t2cr, bytes32 _tokenID)
-        internal
+    /**
+      *  @dev Return tokens whose addresses are in "Crowdfunding" status
+      *  @param _aalAddress The address of the contract ArbitrableAddressList
+      *  @param _t2crAddress The address of the contract ArbitrableTokenList
+      *  @param _klAddress The address of the contract KlerosLiquid
+      *  @param _cursor The index from where to start iteration
+      *  @param _count The number of items to iterate over
+      *  @return The number of tokens and the tokens themselves in "Crowdfunding" status for this iteration
+      */
+    function getCrowdfundingAddresses(address _aalAddress, address _t2crAddress, address _klAddress, uint _cursor, uint _count)
+        external
         view
-        returns ( uint requesterDepositFee )
+        returns ( uint count, Token[100] memory tokens )
     {
-        uint[3] memory paidFees;
+        ArbitrableAddressList aal = ArbitrableAddressList(_aalAddress);
+        ArbitrableTokenList t2cr = ArbitrableTokenList(_t2crAddress);
+        KlerosLiquid kl = KlerosLiquid(_klAddress);
 
-        // The deposit fee paid by the requester is present in the first round (0) of the first request (0) for the token
-        ( , paidFees, , ) = _t2cr.getRoundInfo(_tokenID, 0, 0);
-        requesterDepositFee = paidFees[1];
+        uint addressIndex = 0;
+
+        for (uint i = _cursor; i < (_cursor + _count); i++) {
+            address addr = aal.addressList(i);
+            Status status = getAddressStatus(aal, kl, addr);
+            if (status == Status.Crowdfunding) {
+                Token memory token = getRegisteredToken(t2cr, addr);
+                tokens[addressIndex] = token;
+                addressIndex++;
+            }
+        }
+        count = addressIndex;
     }
 
+     /**
+      *  @dev Return tokens in "Crowdfunding" status
+      *  @param _t2crAddress The address of the contract ArbitrableTokenList
+      *  @param _klAddress The address of the contract KlerosLiquid
+      *  @param _cursor The index from where to start iteration
+      *  @param _count The number of items to iterate over
+      *  @return The number of tokens and tokens themselves in "Crowdfunding" status for this iteration
+      */
+    function getCrowdfundingTokens(address _t2crAddress, address _klAddress, uint _cursor, uint _count)
+        external
+        view
+        returns ( uint count, Token[100] memory tokens )
+    {
+        ArbitrableTokenList t2cr = ArbitrableTokenList(_t2crAddress);
+        KlerosLiquid kl = KlerosLiquid(_klAddress);
+
+        uint tokenIndex = 0;
+
+        for (uint i = _cursor; i < (_cursor + _count); i++) {
+            bytes32 tokenID = t2cr.tokensList(i);
+            Status status = getTokenStatus(t2cr, kl, tokenID);
+            if (status == Status.Crowdfunding) {
+                (string memory name, string memory ticker, , string memory symbolMultihash , , ) = t2cr.getTokenInfo(tokenID);
+                tokens[tokenIndex] = Token(name, ticker, symbolMultihash);
+                tokenIndex++;
+            }
+        }
+        count = tokenIndex;
+    }
+
+     /**
+      *  @dev Return the token with status "Registered" associated with the given address
+      *  @param _t2cr An instance of the contract ArbitrableTokenList
+      *  @param _address The address of the token
+      *  @return The token with status "Registered"
+      */
+    function getRegisteredToken(ArbitrableTokenList _t2cr, address _address)
+        internal
+        view
+        returns ( Token memory token )
+    {
+        uint tokenCount = _t2cr.tokenCount();
+        for (uint i = 0; i < tokenCount; i++) {
+            bytes32 tokenID = _t2cr.tokensList(i);
+            (
+                string memory name,
+                string memory ticker,
+                address addr,
+                string memory symbolMultihash,
+                ArbitrableTokenList.TokenStatus tokenStatus,
+            ) = _t2cr.getTokenInfo(tokenID);
+
+            if (addr == _address && tokenStatus == ArbitrableTokenList.TokenStatus.Registered) {
+                return Token(name, ticker, symbolMultihash);
+            }
+        }
+    }
+
+    /**
+     * @dev Return the status of the given address
+     * @param _aal An instance of the contract ArbitrableAddressList
+     * @param _kl An instance of the contract KlerosLiquid
+     * @param _address The address
+     * @return The status of the address
+     */
+    function getAddressStatus(ArbitrableAddressList _aal, KlerosLiquid _kl, address _address)
+        internal
+        view
+        returns ( Status status )
+    {
+        (ArbitrableAddressList.AddressStatus addressStatus, uint numberOfRequests) = _aal.getAddressInfo(_address);
+
+        if (addressStatus == ArbitrableAddressList.AddressStatus.Registered) {
+            status = Status.Accepted;
+        } else if (addressStatus == ArbitrableAddressList.AddressStatus.Absent) {
+            status = Status.Rejected;
+        } else if (addressStatus == ArbitrableAddressList.AddressStatus.RegistrationRequested || addressStatus == ArbitrableAddressList.AddressStatus.ClearingRequested) {
+            (bool disputed, uint disputeID, , , , , , , ) = _aal.getRequestInfo(_address, numberOfRequests - 1);
+
+            if (!disputed) {
+                status = Status.Pending;
+            } else {
+                if (_kl.disputeStatus(disputeID) == Arbitrator.DisputeStatus.Appealable) {
+                    status = Status.Crowdfunding;
+                } else {
+                    status = Status.Appealed;
+                }
+            }
+        }
+    }
+
+    /**
+     * @dev Return the status of the given token
+     * @param _t2cr An instance of the contract ArbitrableTokenList
+     * @param _kl An instance of the contract KlerosLiquid
+     * @param _tokenID The ID of the token
+     * @return The status of the token
+     */
+    function getTokenStatus(ArbitrableTokenList _t2cr, KlerosLiquid _kl, bytes32 _tokenID)
+        internal
+        view
+        returns ( Status status )
+    {
+        ( , , , , ArbitrableTokenList.TokenStatus tokenStatus, uint numberOfRequests) = _t2cr.getTokenInfo(_tokenID);
+
+        if (tokenStatus == ArbitrableTokenList.TokenStatus.Registered) {
+            status = Status.Accepted;
+        } else if (tokenStatus == ArbitrableTokenList.TokenStatus.Absent) {
+            status = Status.Rejected;
+        } else if (tokenStatus == ArbitrableTokenList.TokenStatus.RegistrationRequested || tokenStatus == ArbitrableTokenList.TokenStatus.ClearingRequested) {
+            (bool disputed, uint disputeID, , , , , , , ) = _t2cr.getRequestInfo(_tokenID, numberOfRequests - 1);
+
+            if (!disputed) {
+                status = Status.Pending;
+            } else {
+                if (_kl.disputeStatus(disputeID) == Arbitrator.DisputeStatus.Appealable) {
+                    status = Status.Crowdfunding;
+                } else {
+                    status = Status.Appealed;
+                }
+            }
+        }
+    }
+
+    /**
+     * @dev Check if the address was challenged at some point
+     * @param _aal An instance of the contract ArbitrableAddressList
+     * @param _address The address
+     * @return true if the address was challenged or false if the address was not challenged
+     */
+    function wasAddressChallenged(ArbitrableAddressList _aal, address _address)
+        internal
+        view
+        returns ( bool challenged )
+    {
+        ( , uint numberOfRequests) = _aal.getAddressInfo(_address);
+
+        for (uint i = 0; i < numberOfRequests; i++) {
+            (bool disputed, , , , , , , , ) = _aal.getRequestInfo(_address, i);
+
+            if (disputed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @dev Check if the token was challenged at some point
+     * @param _t2cr An instance of the contract ArbitrableTokenList
+     * @param _tokenID The ID of the token
+     * @return true if the token was challenged or false if the token was not challenged
+     */
+    function wasTokenChallenged(ArbitrableTokenList _t2cr, bytes32 _tokenID)
+        internal
+        view
+        returns ( bool challenged )
+    {
+        ( , , , , , uint numberOfRequests) = _t2cr.getTokenInfo(_tokenID);
+
+        for (uint i = 0; i < numberOfRequests; i++) {
+            (bool disputed, , , , , , , , ) = _t2cr.getRequestInfo(_tokenID, i);
+
+            if (disputed) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

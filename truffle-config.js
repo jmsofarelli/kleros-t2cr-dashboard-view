@@ -18,11 +18,17 @@
  *
  */
 
+// Config: https://medium.com/@ethdapp/deploy-smart-contracts-to-the-ethereum-mainnet-with-truffle-ebf0bf9a9efe
+
 const fs = require('fs');
 const mnemonic = fs.readFileSync(".secret").toString().trim();
-const infuraUrl = fs.readFileSync(".infura").toString().trim();
+const infuraKovanUrl = fs.readFileSync(".infura_kovan").toString().trim();
+const infuraLiveUrl = fs.readFileSync(".infura_live").toString().trim();
 
 const HDWalletProvider = require('truffle-hdwallet-provider');
+
+const Web3 = require('web3');
+const web3 = new Web3();
 
 module.exports = {
   /**
@@ -61,13 +67,20 @@ module.exports = {
     // Useful for deploying to a public network.
     // NB: It's important to wrap the provider as a function.
     kovan: {
-      provider: () => new HDWalletProvider(mnemonic, infuraUrl),
+      provider: () => new HDWalletProvider(mnemonic, infuraKovanUrl),
       network_id: 42,       // Ropsten's id
       gas: 4700000,        // Ropsten has a lower block limit than mainnet
       confirmations: 0,    // # of confs to wait between deployments. (default: 0)
       timeoutBlocks: 200,  // # of blocks before a deployment times out  (minimum/default: 50)
       skipDryRun: true     // Skip dry run before migrations? (default: false for public nets )
     },
+
+    // Gas price reference: https://ethgasstation.info/
+    live: {
+      provider: () => new HDWalletProvider(mnemonic, infuraLiveUrl),
+      network_id: 1,
+      gasPrice: web3.utils.toWei('30', 'gwei')
+    }
 
     // Useful for private networks
     // private: {
